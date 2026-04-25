@@ -33,16 +33,6 @@ func (CLI) Run(ctx context.Context, args ...string) ([]byte, error) {
 	return out, nil
 }
 
-func (CLI) Start(ctx context.Context, args ...string) (*exec.Cmd, *bytes.Buffer, error) {
-	cmd := exec.CommandContext(ctx, tailscalePath(), args...)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	if err := cmd.Start(); err != nil {
-		return nil, &stderr, err
-	}
-	return cmd, &stderr, nil
-}
-
 type Client struct {
 	Runner Runner
 }
@@ -98,41 +88,58 @@ func (s Status) HasFunnel() bool {
 }
 
 func (c Client) StartFunnel(ctx context.Context, proxyPort int) error {
-	ctx, cancel := context.WithCancel(ctx)
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
 	args := []string{"funnel", "--bg", "--yes", "localhost:" + strconv.Itoa(proxyPort)}
-	if starter, ok := c.Runner.(interface {
-		Start(context.Context, ...string) (*exec.Cmd, *bytes.Buffer, error)
-	}); ok {
-		cmd, stderr, err := starter.Start(ctx, args...)
-		if err != nil {
-			return fmt.Errorf("starting tailscale funnel: %w", err)
-		}
-		done := make(chan error, 1)
-		go func() { done <- cmd.Wait() }()
-		select {
-		case err := <-done:
-			if err != nil {
-				msg := strings.TrimSpace(stderr.String())
-				if msg != "" {
-					return fmt.Errorf("starting tailscale funnel: %w: %s", err, msg)
-				}
-				return fmt.Errorf("starting tailscale funnel: %w", err)
-			}
-			return nil
-		case <-time.After(1200 * time.Millisecond):
-			_ = cmd.Process.Release()
-			return nil
-		}
-	}
-
-	ctx, timeoutCancel := context.WithTimeout(ctx, 30*time.Second)
-	defer timeoutCancel()
 	if _, err := c.Runner.Run(ctx, args...); err != nil {
 		return fmt.Errorf("starting tailscale funnel: %w", err)
 	}
+	if err := c.waitForFunnel(ctx, proxyPort, 5*time.Second); err != nil {
+		return err
+	}
 	return nil
+}
+
+func (c Client) waitForFunnel(ctx context.Context, proxyPort int, timeout time.Duration) error {
+	target := "localhost:" + strconv.Itoa(proxyPort)
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		out, err := c.Runner.Run(ctx, "funnel", "status", "--json")
+		if err == nil && funnelHasProxy(out, target) {
+			return nil
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
+	return fmt.Errorf("tailscale funnel did not register %s; check that Funnel is enabled for this tailnet (https://login.tailscale.com/admin/acls)", target)
+}
+
+func funnelHasProxy(data []byte, target string) bool {
+	var v any
+	if err := json.Unmarshal(data, &v); err != nil {
+		return false
+	}
+	return walkProxy(v, target)
+}
+
+func walkProxy(v any, target string) bool {
+	switch x := v.(type) {
+	case string:
+		return strings.Contains(x, target)
+	case []any:
+		for _, item := range x {
+			if walkProxy(item, target) {
+				return true
+			}
+		}
+	case map[string]any:
+		for _, item := range x {
+			if walkProxy(item, target) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (c Client) StopFunnel(ctx context.Context) error {
