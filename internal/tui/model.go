@@ -32,7 +32,8 @@ type Model struct {
 	customMode  bool
 	customValue string
 	err         string
-	status      string
+	notice      string
+	noticeUntil time.Time
 	exposing    bool
 	pickMode    bool
 	logMode     bool
@@ -137,7 +138,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.err = "stop is unavailable"
 				return m, nil
 			}
-			m.status = "stopping funnelr..."
+			m.setNotice("stopping funnelr...", 0)
 			return m, stopCmd(m.stop)
 		case "l":
 			if m.active == nil {
@@ -153,7 +154,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.exposing = false
 		if msg.Err != nil {
 			m.err = msg.Err.Error()
-			m.status = ""
+			m.clearNotice()
 			return m, nil
 		}
 		m.active = &msg.Result.Session
@@ -162,15 +163,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.err = ""
 		m.openLogs()
 		if msg.Result.Copied {
-			m.status = fmt.Sprintf("public: %s  copied to clipboard", msg.Result.Session.URL)
+			m.setNotice("copied to clipboard", 3*time.Second)
 		} else {
-			m.status = fmt.Sprintf("public: %s", msg.Result.Session.URL)
+			m.clearNotice()
 		}
 		return m, tickCmd()
 	case stopDoneMsg:
 		if msg.Err != nil {
 			m.err = msg.Err.Error()
-			m.status = ""
+			m.clearNotice()
 			return m, nil
 		}
 		m.active = nil
@@ -179,9 +180,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.logMode = false
 		m.logLines = nil
 		m.err = ""
-		m.status = "stopped funnelr"
+		m.setNotice("stopped funnelr", 3*time.Second)
 	case tickMsg:
 		m.frame++
+		m.expireNotice(time.Time(msg))
 		m.refreshTraffic()
 		if m.logMode {
 			m.refreshLogs()
@@ -205,14 +207,14 @@ func (m Model) startExpose(port int) (tea.Model, tea.Cmd) {
 	}
 	m.exposing = true
 	m.err = ""
-	m.status = fmt.Sprintf("exposing localhost:%d...", port)
+	m.setNotice(fmt.Sprintf("exposing localhost:%d...", port), 0)
 	return m, exposeCmd(m.expose, port)
 }
 
 func (m Model) activatePort(port int) (tea.Model, tea.Cmd) {
 	if m.active != nil && m.active.TargetPort == port {
 		m.err = ""
-		m.status = fmt.Sprintf("active: %s", m.active.URL)
+		m.clearNotice()
 		m.pickMode = false
 		m.openLogs()
 		return m, nil
@@ -264,8 +266,8 @@ func (m Model) View() string {
 		b.WriteString(dimStyle.Render("no active tunnel"))
 		b.WriteString("\n")
 	}
-	if m.status != "" {
-		b.WriteString(statusLine(m.status))
+	if m.notice != "" {
+		b.WriteString(noticeLine(m.notice))
 		b.WriteString("\n")
 	}
 	if m.err != "" {
@@ -381,7 +383,6 @@ func (m *Model) openLogs() {
 	m.logMode = true
 	m.logPort = port
 	m.logPath = state.LogPath(port)
-	m.status = ""
 	m.err = ""
 	m.refreshLogs()
 }
@@ -476,21 +477,28 @@ func (m Model) activeLine() string {
 	}, "  ")
 }
 
-func statusLine(text string) string {
-	if strings.HasPrefix(text, "active: ") {
-		url := strings.TrimPrefix(text, "active: ")
-		return dimStyle.Render("active: ") + urlStyle.Render(url)
-	}
-	if strings.HasPrefix(text, "public: ") {
-		url := strings.TrimPrefix(text, "public: ")
-		suffix := ""
-		if before, after, ok := strings.Cut(url, "  "); ok {
-			url = before
-			suffix = "  " + dimStyle.Render(after)
-		}
-		return dimStyle.Render("public: ") + urlStyle.Render(url) + suffix
-	}
+func noticeLine(text string) string {
 	return dimStyle.Render(text)
+}
+
+func (m *Model) setNotice(text string, ttl time.Duration) {
+	m.notice = text
+	if ttl > 0 {
+		m.noticeUntil = time.Now().Add(ttl)
+		return
+	}
+	m.noticeUntil = time.Time{}
+}
+
+func (m *Model) clearNotice() {
+	m.notice = ""
+	m.noticeUntil = time.Time{}
+}
+
+func (m *Model) expireNotice(now time.Time) {
+	if !m.noticeUntil.IsZero() && !now.Before(m.noticeUntil) {
+		m.clearNotice()
+	}
 }
 
 func (m Model) cursorGlyph(port int) string {
