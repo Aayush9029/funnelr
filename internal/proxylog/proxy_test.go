@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Aayush9029/funnelr/internal/state"
 )
 
 func TestProxyLogsMetadata(t *testing.T) {
@@ -23,12 +25,14 @@ func TestProxyLogsMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logPath := filepath.Join(t.TempDir(), "3000.log")
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "3000.log")
+	statsPath := filepath.Join(dir, "3000.stats.json")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- Server{TargetPort: targetPort, ProxyPort: proxyPort, LogPath: logPath}.Serve(ctx)
+		errCh <- Server{TargetPort: targetPort, ProxyPort: proxyPort, LogPath: logPath, StatsPath: statsPath}.Serve(ctx)
 	}()
 	waitPort(t, proxyPort)
 
@@ -59,6 +63,17 @@ func TestProxyLogsMetadata(t *testing.T) {
 		if !strings.Contains(line, want) {
 			t.Fatalf("log %q missing %q", line, want)
 		}
+	}
+
+	traffic, err := state.LoadTraffic(statsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if traffic.Requests < 1 {
+		t.Fatalf("requests = %d, want at least 1", traffic.Requests)
+	}
+	if traffic.ResponseBytes < 2 {
+		t.Fatalf("response bytes = %d, want at least 2", traffic.ResponseBytes)
 	}
 }
 

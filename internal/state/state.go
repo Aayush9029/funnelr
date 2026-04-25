@@ -16,7 +16,15 @@ type Session struct {
 	PID        int       `json:"pid"`
 	URL        string    `json:"url"`
 	LogPath    string    `json:"log_path"`
+	StatsPath  string    `json:"stats_path"`
 	StartedAt  time.Time `json:"started_at"`
+}
+
+type Traffic struct {
+	Requests      int64     `json:"requests"`
+	RequestBytes  int64     `json:"request_bytes"`
+	ResponseBytes int64     `json:"response_bytes"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 func Dir() string {
@@ -29,6 +37,14 @@ func Path() string {
 
 func LogPath(port int) string {
 	return filepath.Join(Dir(), itoa(port)+".log")
+}
+
+func StatsPath(port int) string {
+	return filepath.Join(Dir(), itoa(port)+".stats.json")
+}
+
+func DaemonLogPath(port int) string {
+	return filepath.Join(Dir(), itoa(port)+".daemon.log")
 }
 
 func Save(s Session) error {
@@ -60,6 +76,26 @@ func Clear() error {
 		return nil
 	}
 	return err
+}
+
+func LoadTraffic(path string) (Traffic, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return Traffic{}, err
+	}
+	var traffic Traffic
+	return traffic, json.Unmarshal(data, &traffic)
+}
+
+func SaveTraffic(path string, traffic Traffic) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	data, err := json.Marshal(traffic)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o644)
 }
 
 func itoa(i int) string {

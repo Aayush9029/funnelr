@@ -11,13 +11,17 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
+
+	"github.com/Aayush9029/funnelr/internal/state"
 )
 
 type Server struct {
 	TargetPort int
 	ProxyPort  int
 	LogPath    string
+	StatsPath  string
 }
 
 func FreePort() (int, error) {
@@ -39,6 +43,7 @@ func (s Server) Serve(ctx context.Context) error {
 	}
 	defer file.Close()
 	logger := log.New(file, "", 0)
+	stats := &trafficStats{path: s.StatsPath}
 
 	target, err := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", s.TargetPort))
 	if err != nil {
@@ -53,6 +58,7 @@ func (s Server) Serve(ctx context.Context) error {
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
 		logger.Printf("%s method=%s path=%q status=502 duration_ms=0 request_bytes=%d response_bytes=0 remote=%q error=%q",
 			time.Now().Format(time.RFC3339), r.Method, r.URL.RequestURI(), r.ContentLength, r.RemoteAddr, err)
+		stats.add(requestSize(r), 0)
 		http.Error(w, err.Error(), http.StatusBadGateway)
 	}
 
@@ -62,6 +68,7 @@ func (s Server) Serve(ctx context.Context) error {
 		proxy.ServeHTTP(lw, r)
 		logger.Printf("%s method=%s path=%q status=%d duration_ms=%d request_bytes=%d response_bytes=%d remote=%q",
 			start.Format(time.RFC3339), r.Method, r.URL.RequestURI(), lw.status, time.Since(start).Milliseconds(), requestSize(r), lw.bytes, r.RemoteAddr)
+		stats.add(requestSize(r), lw.bytes)
 	})
 
 	srv := &http.Server{
@@ -84,6 +91,28 @@ func (s Server) Serve(ctx context.Context) error {
 		}
 		return err
 	}
+}
+
+type trafficStats struct {
+	mu   sync.Mutex
+	path string
+	data state.Traffic
+}
+
+func (t *trafficStats) add(requestBytes, responseBytes int64) {
+	if t.path == "" {
+		return
+	}
+	if requestBytes < 0 {
+		requestBytes = 0
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.data.Requests++
+	t.data.RequestBytes += requestBytes
+	t.data.ResponseBytes += responseBytes
+	t.data.UpdatedAt = time.Now()
+	_ = state.SaveTraffic(t.path, t.data)
 }
 
 type loggingWriter struct {

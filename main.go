@@ -5,20 +5,17 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"net"
 	"os"
 	"os/exec"
 	"os/signal"
 	"strconv"
-	"strings"
 	"syscall"
 	"time"
 
-	"github.com/Aayush9029/funnelr/internal/clipboard"
+	"github.com/Aayush9029/funnelr/internal/funnel"
 	"github.com/Aayush9029/funnelr/internal/ports"
 	"github.com/Aayush9029/funnelr/internal/proxylog"
 	"github.com/Aayush9029/funnelr/internal/state"
-	"github.com/Aayush9029/funnelr/internal/tailscale"
 	"github.com/Aayush9029/funnelr/internal/tui"
 	"github.com/Aayush9029/funnelr/internal/ui"
 	tea "github.com/charmbracelet/bubbletea"
@@ -63,25 +60,22 @@ func run(args []string) error {
 
 func runInteractive() error {
 	ctx := context.Background()
-	if _, err := tailscale.New().Check(ctx); err != nil {
+	service := funnel.New()
+	if err := service.Check(ctx); err != nil {
 		return err
 	}
 	open := ports.OpenOnly(ports.Defaults, 120*time.Millisecond)
-	var active *state.Session
-	if s, err := state.Load(); err == nil {
-		active = &s
+	active, err := funnel.LoadSession()
+	if err != nil {
+		return err
 	}
-	model := tui.NewModel(open, active)
+	model := tui.NewModel(open, active, service.Expose, service.Stop)
 	finalModel, err := tea.NewProgram(model).Run()
 	if err != nil {
 		return err
 	}
 	result := finalModel.(tui.Model).Result()
 	switch result.Action {
-	case tui.ActionExpose:
-		return expose(result.Port)
-	case tui.ActionStop:
-		return runStop()
 	case tui.ActionLogs:
 		return tailLog(state.LogPath(result.Port))
 	default:
@@ -90,86 +84,18 @@ func runInteractive() error {
 }
 
 func expose(port int) error {
-	if port <= 0 || port > 65535 {
-		return fmt.Errorf("invalid port: %d", port)
-	}
-	if !ports.IsOpen(port, 300*time.Millisecond) {
-		return fmt.Errorf("localhost:%d is not accepting TCP connections", port)
-	}
-
-	ctx := context.Background()
-	ts := tailscale.New()
-	status, err := ts.Check(ctx)
+	result, err := funnel.New().Expose(context.Background(), port, ui.Status)
 	if err != nil {
 		return err
 	}
 
-	_ = stopActive(false)
-
-	proxyPort, err := proxylog.FreePort()
-	if err != nil {
-		return fmt.Errorf("finding proxy port: %w", err)
-	}
-	logPath := state.LogPath(port)
-	if err := startDaemon(port, proxyPort, logPath); err != nil {
-		return err
-	}
-	time.Sleep(250 * time.Millisecond)
-	if !waitForPort(proxyPort, 2*time.Second) {
-		return fmt.Errorf("proxy failed to start on localhost:%d", proxyPort)
-	}
-
-	if err := ts.StartFunnel(ctx, proxyPort); err != nil {
-		_ = stopPID(lastDaemonPID)
-		return err
-	}
-	url, err := ts.FunnelURL(ctx, status.Self.DNSName)
-	if err != nil {
-		_ = stopPID(lastDaemonPID)
-		return err
-	}
-
-	s := state.Session{
-		TargetPort: port,
-		ProxyPort:  proxyPort,
-		PID:        daemonPID(),
-		URL:        url,
-		LogPath:    logPath,
-		StartedAt:  time.Now(),
-	}
-	if err := state.Save(s); err != nil {
-		return err
-	}
-
-	fmt.Println(url)
-	if clipboard.Copy(url) {
+	fmt.Printf("\n%s\n\n", result.Session.URL)
+	if result.Copied {
 		ui.Status("copied to clipboard")
 	}
-	ui.Success("localhost:%d is public at %s", port, url)
-	ui.Status("logs: %s", logPath)
+	ui.Success("localhost:%d is public at %s", result.Session.TargetPort, result.Session.URL)
+	ui.Status("logs: %s", result.Session.LogPath)
 	return nil
-}
-
-func startDaemon(targetPort, proxyPort int, logPath string) error {
-	exe, err := os.Executable()
-	if err != nil {
-		return err
-	}
-	cmd := exec.Command(exe, "daemon", "--target", strconv.Itoa(targetPort), "--proxy", strconv.Itoa(proxyPort), "--log", logPath)
-	cmd.Stdout = nil
-	cmd.Stderr = nil
-	cmd.Stdin = nil
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("starting proxy daemon: %w", err)
-	}
-	lastDaemonPID = cmd.Process.Pid
-	return cmd.Process.Release()
-}
-
-var lastDaemonPID int
-
-func daemonPID() int {
-	return lastDaemonPID
 }
 
 func runDaemon(args []string) error {
@@ -177,6 +103,7 @@ func runDaemon(args []string) error {
 	target := fs.Int("target", 0, "target local port")
 	proxy := fs.Int("proxy", 0, "proxy local port")
 	logPath := fs.String("log", "", "log path")
+	statsPath := fs.String("stats", "", "stats path")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -184,45 +111,14 @@ func runDaemon(args []string) error {
 		return errors.New("daemon requires --target, --proxy, and --log")
 	}
 	ctx := signalContext()
-	return proxylog.Server{TargetPort: *target, ProxyPort: *proxy, LogPath: *logPath}.Serve(ctx)
+	return proxylog.Server{TargetPort: *target, ProxyPort: *proxy, LogPath: *logPath, StatsPath: *statsPath}.Serve(ctx)
 }
 
 func runStop() error {
-	return stopActive(true)
-}
-
-func stopActive(verbose bool) error {
-	if s, err := state.Load(); err == nil && s.PID > 0 {
-		_ = stopPID(s.PID)
-	}
-	if err := tailscale.New().StopFunnel(context.Background()); err != nil {
-		if !strings.Contains(err.Error(), "no funnel") && !strings.Contains(err.Error(), "not running") {
-			return err
-		}
-	}
-	if err := state.Clear(); err != nil {
+	if err := funnel.New().Stop(context.Background()); err != nil {
 		return err
 	}
-	if verbose {
-		ui.Success("stopped funnelr")
-	}
-	return nil
-}
-
-func stopDaemon() error {
-	s, err := state.Load()
-	if err != nil || s.PID <= 0 {
-		return nil
-	}
-	return stopPID(s.PID)
-}
-
-func stopPID(pid int) error {
-	process, err := os.FindProcess(pid)
-	if err != nil {
-		return err
-	}
-	_ = process.Signal(syscall.SIGTERM)
+	ui.Success("stopped funnelr")
 	return nil
 }
 
@@ -266,19 +162,6 @@ func tailLog(path string) error {
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
 	return cmd.Run()
-}
-
-func waitForPort(port int, timeout time.Duration) bool {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		conn, err := net.DialTimeout("tcp", "127.0.0.1:"+strconv.Itoa(port), 80*time.Millisecond)
-		if err == nil {
-			_ = conn.Close()
-			return true
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	return false
 }
 
 func signalContext() context.Context {
