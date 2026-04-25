@@ -132,18 +132,28 @@ func runStatus() error {
 
 func runLogs(args []string) error {
 	path := ""
+	label := ""
 	if len(args) > 0 {
 		port, err := strconv.Atoi(args[0])
-		if err != nil {
-			return fmt.Errorf("invalid port: %s", args[0])
+		if err != nil || port <= 0 || port > 65535 {
+			return fmt.Errorf("invalid port %q; use a number between 1 and 65535", args[0])
 		}
 		path = state.LogPath(port)
+		label = fmt.Sprintf("localhost:%d", port)
 	} else if s, err := state.Load(); err == nil {
 		path = s.LogPath
+		label = fmt.Sprintf("active tunnel localhost:%d", s.TargetPort)
 	}
 	if path == "" {
-		return errors.New("no log target; pass a port or start a session")
+		return errors.New("no active tunnel logs; run 'funnelr' to expose a port, or pass a port with existing logs")
 	}
+	if _, err := os.Stat(path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("no logs found for %s", label)
+		}
+		return fmt.Errorf("opening logs for %s: %w", label, err)
+	}
+	ui.Status("tailing logs for %s", label)
 	return tailLog(path)
 }
 
