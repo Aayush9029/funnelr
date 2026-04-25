@@ -5,16 +5,21 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 )
 
-const ToolName = "funnelr"
+const (
+	ToolName = "funnelr"
+	BaseDir  = "/tmp/funnelr"
+)
 
 type Session struct {
 	TargetPort int       `json:"target_port"`
 	ProxyPort  int       `json:"proxy_port"`
 	PID        int       `json:"pid"`
 	URL        string    `json:"url"`
+	SessionID  string    `json:"session_id"`
 	LogPath    string    `json:"log_path"`
 	StatsPath  string    `json:"stats_path"`
 	StartedAt  time.Time `json:"started_at"`
@@ -28,23 +33,43 @@ type Traffic struct {
 }
 
 func Dir() string {
-	return filepath.Join(os.TempDir(), ToolName)
+	return BaseDir
 }
 
 func Path() string {
 	return filepath.Join(Dir(), "state.json")
 }
 
-func LogPath(port int) string {
-	return filepath.Join(Dir(), itoa(port)+".log")
+func NewSessionID(t time.Time) string {
+	return t.UTC().Format("20060102T150405")
 }
 
-func StatsPath(port int) string {
-	return filepath.Join(Dir(), itoa(port)+".stats.json")
+func LogPath(port int, sessionID string) string {
+	return filepath.Join(Dir(), itoa(port)+"-"+sessionID+".log")
 }
 
-func DaemonLogPath(port int) string {
-	return filepath.Join(Dir(), itoa(port)+".daemon.log")
+func StatsPath(port int, sessionID string) string {
+	return filepath.Join(Dir(), itoa(port)+"-"+sessionID+".stats.json")
+}
+
+func DaemonLogPath(port int, sessionID string) string {
+	return filepath.Join(Dir(), itoa(port)+"-"+sessionID+".daemon.log")
+}
+
+func LatestLogPath(port int) string {
+	matches, err := filepath.Glob(filepath.Join(Dir(), itoa(port)+"-*.log"))
+	if err != nil || len(matches) == 0 {
+		return ""
+	}
+	sort.Slice(matches, func(i, j int) bool {
+		ai, _ := os.Stat(matches[i])
+		aj, _ := os.Stat(matches[j])
+		if ai == nil || aj == nil {
+			return false
+		}
+		return ai.ModTime().After(aj.ModTime())
+	})
+	return matches[0]
 }
 
 func Save(s Session) error {

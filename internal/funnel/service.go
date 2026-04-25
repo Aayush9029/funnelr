@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -61,10 +62,13 @@ func (s Service) Expose(ctx context.Context, port int, progress ProgressFunc) (E
 		return ExposeResult{}, fmt.Errorf("finding proxy port: %w", err)
 	}
 
-	logPath := state.LogPath(port)
-	statsPath := state.StatsPath(port)
+	startedAt := time.Now()
+	sessionID := state.NewSessionID(startedAt)
+	logPath := state.LogPath(port, sessionID)
+	statsPath := state.StatsPath(port, sessionID)
+	daemonLogPath := state.DaemonLogPath(port, sessionID)
 	report(progress, "starting request logger on localhost:%d", proxyPort)
-	pid, err := startDaemon(port, proxyPort, logPath, statsPath)
+	pid, err := startDaemon(port, proxyPort, logPath, statsPath, daemonLogPath)
 	if err != nil {
 		return ExposeResult{}, err
 	}
@@ -91,9 +95,10 @@ func (s Service) Expose(ctx context.Context, port int, progress ProgressFunc) (E
 		ProxyPort:  proxyPort,
 		PID:        pid,
 		URL:        url,
+		SessionID:  sessionID,
 		LogPath:    logPath,
 		StatsPath:  statsPath,
-		StartedAt:  time.Now(),
+		StartedAt:  startedAt,
 	}
 	if err := state.Save(session); err != nil {
 		return ExposeResult{}, err
@@ -125,12 +130,15 @@ func LoadSession() (*state.Session, error) {
 	return &session, nil
 }
 
-func startDaemon(targetPort, proxyPort int, logPath, statsPath string) (int, error) {
+func startDaemon(targetPort, proxyPort int, logPath, statsPath, daemonLogPath string) (int, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return 0, err
 	}
-	daemonLog, err := os.OpenFile(state.DaemonLogPath(targetPort), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err := os.MkdirAll(filepath.Dir(daemonLogPath), 0o755); err != nil {
+		return 0, err
+	}
+	daemonLog, err := os.OpenFile(daemonLogPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
 		return 0, err
 	}

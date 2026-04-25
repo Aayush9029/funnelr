@@ -138,7 +138,11 @@ func runLogs(args []string) error {
 		if err != nil || port <= 0 || port > 65535 {
 			return fmt.Errorf("invalid port %q; use a number between 1 and 65535", args[0])
 		}
-		path = state.LogPath(port)
+		if s, err := state.Load(); err == nil && s.TargetPort == port && s.LogPath != "" {
+			path = s.LogPath
+		} else {
+			path = state.LatestLogPath(port)
+		}
 		label = fmt.Sprintf("localhost:%d", port)
 	} else if s, err := state.Load(); err == nil {
 		path = s.LogPath

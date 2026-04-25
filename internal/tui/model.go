@@ -382,7 +382,11 @@ func (m *Model) openLogs() {
 	}
 	m.logMode = true
 	m.logPort = port
-	m.logPath = state.LogPath(port)
+	if m.active != nil && m.active.TargetPort == port && m.active.LogPath != "" {
+		m.logPath = m.active.LogPath
+	} else {
+		m.logPath = state.LatestLogPath(port)
+	}
 	m.err = ""
 	m.refreshLogs()
 }
