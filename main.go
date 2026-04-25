@@ -70,17 +70,8 @@ func runInteractive() error {
 		return err
 	}
 	model := tui.NewModel(open, active, service.Expose, service.Stop)
-	finalModel, err := tea.NewProgram(model).Run()
-	if err != nil {
-		return err
-	}
-	result := finalModel.(tui.Model).Result()
-	switch result.Action {
-	case tui.ActionLogs:
-		return tailLog(state.LogPath(result.Port))
-	default:
-		return nil
-	}
+	_, err = tea.NewProgram(model).Run()
+	return err
 }
 
 func expose(port int) error {

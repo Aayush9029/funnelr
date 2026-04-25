@@ -25,7 +25,7 @@ func TestHelpLineActiveDashboard(t *testing.T) {
 	active := &state.Session{TargetPort: 3000, URL: "https://example.ts.net"}
 	model := NewModel([]ports.Port{{Number: 3000, Open: true}}, active, nil, nil)
 	help := stripANSI(model.helpLine())
-	for _, want := range []string{"p pick/swap", "l/esc hide logs", "s stop"} {
+	for _, want := range []string{"p change port", "l/esc hide logs", "s stop"} {
 		if !strings.Contains(help, want) {
 			t.Fatalf("help %q missing %q", help, want)
 		}
@@ -42,6 +42,23 @@ func TestHelpLineActivePickerSelectedActive(t *testing.T) {
 	}
 	if !strings.Contains(help, "selected active") {
 		t.Fatalf("help %q missing selected active state", help)
+	}
+	for _, disallowed := range []string{"s stop", "l logs"} {
+		if strings.Contains(help, disallowed) {
+			t.Fatalf("picker help %q should not contain dashboard action %q", help, disallowed)
+		}
+	}
+}
+
+func TestLogViewDoesNotDuplicateControls(t *testing.T) {
+	active := &state.Session{TargetPort: 3000, URL: "https://example.ts.net"}
+	model := NewModel([]ports.Port{{Number: 3000, Open: true}}, active, nil, nil)
+	view := stripANSI(model.View())
+	if strings.Count(view, "l/esc") != 1 {
+		t.Fatalf("view %q should contain one l/esc control", view)
+	}
+	if strings.Contains(view, "logs localhost:3000  l/esc") {
+		t.Fatalf("log header should not contain controls: %q", view)
 	}
 }
 

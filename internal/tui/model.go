@@ -15,20 +15,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-type Action int
-
-const (
-	ActionNone Action = iota
-	ActionExpose
-	ActionStop
-	ActionLogs
-)
-
-type Result struct {
-	Action Action
-	Port   int
-}
-
 type ExposeFunc func(context.Context, int, funnel.ProgressFunc) (funnel.ExposeResult, error)
 type StopFunc func(context.Context) error
 
@@ -52,7 +38,6 @@ type Model struct {
 	logPort     int
 	logPath     string
 	logLines    []string
-	result      Result
 }
 
 var (
@@ -259,7 +244,10 @@ func (m Model) View() string {
 	var b strings.Builder
 	b.WriteString(titleStyle.Render("funnelr"))
 	b.WriteString("\n")
-	if m.active != nil {
+	if m.showPicker() && m.active != nil && !m.customMode {
+		b.WriteString(dimStyle.Render("change port"))
+		b.WriteString("\n")
+	} else if m.active != nil {
 		b.WriteString(m.activeLine())
 		b.WriteString("\n")
 	} else {
@@ -312,10 +300,6 @@ func (m Model) View() string {
 	b.WriteString(m.helpLine())
 	b.WriteString("\n")
 	return b.String()
-}
-
-func (m Model) Result() Result {
-	return m.result
 }
 
 func (m Model) showPicker() bool {
@@ -410,7 +394,6 @@ func (m Model) heightAvailable() int {
 func (m Model) logView() string {
 	var b strings.Builder
 	b.WriteString(logTitleStyle.Render(fmt.Sprintf("logs localhost:%d", m.logPort)))
-	b.WriteString(dimStyle.Render("  l/esc close  q quit"))
 	b.WriteString("\n")
 	for _, line := range m.logLines {
 		b.WriteString(logLineStyle.Render(m.truncateLine(line)))
@@ -498,11 +481,7 @@ func (m Model) helpLine() string {
 			dimStyle.Render("q quit"),
 		}
 		if m.active != nil {
-			parts = append(parts[:3], append([]string{
-				dimStyle.Render("esc close picker"),
-				dimStyle.Render("s stop"),
-				dimStyle.Render("l logs"),
-			}, parts[3:]...)...)
+			parts = append(parts[:3], append([]string{dimStyle.Render("esc cancel")}, parts[3:]...)...)
 		}
 		return strings.Join(parts, dimStyle.Render("  "))
 	}
@@ -511,7 +490,7 @@ func (m Model) helpLine() string {
 		logAction = "l/esc hide logs"
 	}
 	parts := []string{
-		selectorStyle.Render("p pick/swap"),
+		selectorStyle.Render("p change port"),
 		dimStyle.Render("c custom"),
 		dimStyle.Render(logAction),
 		dimStyle.Render("s stop"),
