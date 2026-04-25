@@ -288,7 +288,7 @@ func (m *Model) refreshTraffic() {
 
 func (m Model) activeLine() string {
 	return strings.Join([]string{
-		spinnerStyle.Render(spinnerFrame(m.frame)),
+		activeStyle.Render("●"),
 		portStyle.Render(fmt.Sprintf("localhost:%d", m.active.TargetPort)),
 		dimStyle.Render("⇄"),
 		urlStyle.Render(m.active.URL),
