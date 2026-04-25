@@ -72,7 +72,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.cursor < len(m.ports)-1 {
 				m.cursor++
 			}
-		case " ", "enter":
+		case " ", "space", "enter", "return":
 			if len(m.ports) > 0 {
 				m.result = Result{Action: ActionExpose, Port: m.ports[m.cursor].Number}
 				return m, tea.Quit

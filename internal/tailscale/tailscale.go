@@ -19,7 +19,7 @@ type Runner interface {
 type CLI struct{}
 
 func (CLI) Run(ctx context.Context, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "tailscale", args...)
+	cmd := exec.CommandContext(ctx, tailscalePath(), args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -31,6 +31,16 @@ func (CLI) Run(ctx context.Context, args ...string) ([]byte, error) {
 		return out, err
 	}
 	return out, nil
+}
+
+func (CLI) Start(ctx context.Context, args ...string) (*exec.Cmd, *bytes.Buffer, error) {
+	cmd := exec.CommandContext(ctx, tailscalePath(), args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		return nil, &stderr, err
+	}
+	return cmd, &stderr, nil
 }
 
 type Client struct {
@@ -88,10 +98,38 @@ func (s Status) HasFunnel() bool {
 }
 
 func (c Client) StartFunnel(ctx context.Context, proxyPort int) error {
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	_, err := c.Runner.Run(ctx, "funnel", "--bg", "--yes", "localhost:"+strconv.Itoa(proxyPort))
-	if err != nil {
+
+	args := []string{"funnel", "--bg", "--yes", "localhost:" + strconv.Itoa(proxyPort)}
+	if starter, ok := c.Runner.(interface {
+		Start(context.Context, ...string) (*exec.Cmd, *bytes.Buffer, error)
+	}); ok {
+		cmd, stderr, err := starter.Start(ctx, args...)
+		if err != nil {
+			return fmt.Errorf("starting tailscale funnel: %w", err)
+		}
+		done := make(chan error, 1)
+		go func() { done <- cmd.Wait() }()
+		select {
+		case err := <-done:
+			if err != nil {
+				msg := strings.TrimSpace(stderr.String())
+				if msg != "" {
+					return fmt.Errorf("starting tailscale funnel: %w: %s", err, msg)
+				}
+				return fmt.Errorf("starting tailscale funnel: %w", err)
+			}
+			return nil
+		case <-time.After(1200 * time.Millisecond):
+			_ = cmd.Process.Release()
+			return nil
+		}
+	}
+
+	ctx, timeoutCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer timeoutCancel()
+	if _, err := c.Runner.Run(ctx, args...); err != nil {
 		return fmt.Errorf("starting tailscale funnel: %w", err)
 	}
 	return nil
@@ -195,4 +233,11 @@ func numbersOnly(s string) string {
 		b.WriteRune(r)
 	}
 	return b.String()
+}
+
+func tailscalePath() string {
+	if path, err := exec.LookPath("tailscale"); err == nil {
+		return path
+	}
+	return "tailscale"
 }
