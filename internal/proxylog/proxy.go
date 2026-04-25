@@ -49,11 +49,11 @@ func (s Server) Serve(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	proxy := httputil.NewSingleHostReverseProxy(target)
-	originalDirector := proxy.Director
-	proxy.Director = func(r *http.Request) {
-		originalDirector(r)
-		r.Host = target.Host
+	proxy := &httputil.ReverseProxy{
+		Rewrite: func(r *httputil.ProxyRequest) {
+			r.SetURL(target)
+			r.Out.Host = target.Host
+		},
 	}
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
 		logger.Printf("%s method=%s path=%q status=502 duration_ms=0 request_bytes=%d response_bytes=0 remote=%q error=%q",

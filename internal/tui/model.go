@@ -28,6 +28,7 @@ type Model struct {
 	width       int
 	height      int
 	frame       int
+	lastScan    time.Time
 	customMode  bool
 	customValue string
 	err         string
@@ -115,10 +116,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "p", "tab":
 			if m.active != nil {
 				m.pickMode = !m.pickMode
+				m.err = ""
 				if m.pickMode {
 					m.logMode = false
+					m.lastScan = time.Now()
+					return m, scanPortsCmd()
 				}
-				m.err = ""
 			}
 		case "c":
 			m.customMode = true
@@ -183,7 +186,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.logMode {
 			m.refreshLogs()
 		}
+		t := time.Time(msg)
+		if m.showPicker() && t.Sub(m.lastScan) >= 2*time.Second {
+			m.lastScan = t
+			return m, tea.Batch(tickCmd(), scanPortsCmd())
+		}
 		return m, tickCmd()
+	case scanDoneMsg:
+		m.replacePorts(msg.Ports)
 	}
 	return m, nil
 }
@@ -279,7 +289,8 @@ func (m Model) View() string {
 	}
 
 	if m.exposing {
-		b.WriteString(dimStyle.Render(spinnerFrame(m.frame) + " working..."))
+		b.WriteString(spinnerStyle.Render(spinnerFrame(m.frame)))
+		b.WriteString(dimStyle.Render(" working..."))
 		b.WriteString("\n")
 	} else if m.showPicker() {
 		b.WriteString(m.pickerView())
@@ -330,6 +341,30 @@ func (m Model) pickerView() string {
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+func (m *Model) replacePorts(next []ports.Port) {
+	selected := 0
+	if len(m.ports) > 0 && m.cursor >= 0 && m.cursor < len(m.ports) {
+		selected = m.ports[m.cursor].Number
+	}
+	m.ports = next
+	if len(m.ports) == 0 {
+		m.cursor = 0
+		return
+	}
+	for i, port := range m.ports {
+		if port.Number == selected {
+			m.cursor = i
+			return
+		}
+	}
+	if m.cursor >= len(m.ports) {
+		m.cursor = len(m.ports) - 1
+	}
+	if m.cursor < 0 {
+		m.cursor = 0
+	}
 }
 
 func (m *Model) openLogs() {
@@ -529,6 +564,10 @@ type stopDoneMsg struct {
 
 type tickMsg time.Time
 
+type scanDoneMsg struct {
+	Ports []ports.Port
+}
+
 func exposeCmd(expose ExposeFunc, port int) tea.Cmd {
 	return func() tea.Msg {
 		result, err := expose(context.Background(), port, nil)
@@ -546,4 +585,10 @@ func tickCmd() tea.Cmd {
 	return tea.Tick(250*time.Millisecond, func(t time.Time) tea.Msg {
 		return tickMsg(t)
 	})
+}
+
+func scanPortsCmd() tea.Cmd {
+	return func() tea.Msg {
+		return scanDoneMsg{Ports: ports.OpenOnly(ports.Defaults, 120*time.Millisecond)}
+	}
 }

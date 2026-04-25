@@ -3,8 +3,6 @@ package ui
 import (
 	"fmt"
 	"os"
-
-	"golang.org/x/term"
 )
 
 const (
@@ -19,14 +17,6 @@ const (
 func IsTTY() bool {
 	fi, err := os.Stdout.Stat()
 	return err == nil && fi.Mode()&os.ModeCharDevice != 0
-}
-
-func TermWidth() int {
-	w, _, err := term.GetSize(int(os.Stdout.Fd()))
-	if err != nil || w <= 0 {
-		return 80
-	}
-	return w
 }
 
 func Header(msg string) {
