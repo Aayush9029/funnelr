@@ -49,10 +49,17 @@ type Model struct {
 }
 
 var (
-	titleStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
-	dimStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	activeStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
-	errorStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
+	titleStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
+	dimStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	activeStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
+	errorStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
+	portStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("14"))
+	urlStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Underline(true)
+	downStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("39"))
+	upStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("82"))
+	requestStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("11"))
+	spinnerStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
+	selectorStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
 )
 
 func NewModel(open []ports.Port, active *state.Session, expose ExposeFunc, stop StopFunc) Model {
@@ -202,14 +209,14 @@ func (m Model) View() string {
 	b.WriteString(titleStyle.Render("funnelr"))
 	b.WriteString("\n")
 	if m.active != nil {
-		b.WriteString(activeStyle.Render(m.activeLine()))
+		b.WriteString(m.activeLine())
 		b.WriteString("\n")
 	} else {
 		b.WriteString(dimStyle.Render("no active tunnel"))
 		b.WriteString("\n")
 	}
 	if m.status != "" {
-		b.WriteString(dimStyle.Render(m.status))
+		b.WriteString(statusLine(m.status))
 		b.WriteString("\n")
 	}
 	if m.err != "" {
@@ -244,20 +251,20 @@ func (m Model) View() string {
 		for i, p := range m.ports {
 			cursor := " "
 			if i == m.cursor {
-				cursor = "›"
+				cursor = selectorStyle.Render("›")
 			}
 			circle := "○"
-			lineStyle := lipgloss.NewStyle()
+			portText := fmt.Sprintf("localhost:%d", p.Number)
 			if m.active != nil && m.active.TargetPort == p.Number {
-				circle = "●"
-				lineStyle = activeStyle
+				circle = activeStyle.Render("●")
+				portText = activeStyle.Render(portText)
 			}
-			b.WriteString(lineStyle.Render(fmt.Sprintf("%s %s localhost:%d", cursor, circle, p.Number)))
+			b.WriteString(fmt.Sprintf("%s %s %s", cursor, circle, portText))
 			b.WriteString("\n")
 		}
 	}
 	b.WriteString("\n")
-	b.WriteString(dimStyle.Render("↑/↓ move  enter/space expose  c custom  s stop  l logs  q quit"))
+	b.WriteString(helpLine())
 	b.WriteString("\n")
 	return b.String()
 }
@@ -280,16 +287,41 @@ func (m *Model) refreshTraffic() {
 }
 
 func (m Model) activeLine() string {
-	return fmt.Sprintf("%s localhost:%d ⇄ %s  ↓ %s  ↑ %s  %d req",
-		spinnerFrame(m.frame),
-		m.active.TargetPort,
-		m.active.URL,
-		humanBytes(m.traffic.RequestBytes),
-		humanBytes(m.traffic.ResponseBytes),
-		m.traffic.Requests,
-	)
+	return strings.Join([]string{
+		spinnerStyle.Render(spinnerFrame(m.frame)),
+		portStyle.Render(fmt.Sprintf("localhost:%d", m.active.TargetPort)),
+		dimStyle.Render("⇄"),
+		urlStyle.Render(m.active.URL),
+		downStyle.Render("↓ " + humanBytes(m.traffic.RequestBytes)),
+		upStyle.Render("↑ " + humanBytes(m.traffic.ResponseBytes)),
+		requestStyle.Render(fmt.Sprintf("%d req", m.traffic.Requests)),
+	}, "  ")
 }
 
+func statusLine(text string) string {
+	if strings.HasPrefix(text, "public: ") {
+		url := strings.TrimPrefix(text, "public: ")
+		suffix := ""
+		if before, after, ok := strings.Cut(url, "  "); ok {
+			url = before
+			suffix = "  " + dimStyle.Render(after)
+		}
+		return dimStyle.Render("public: ") + urlStyle.Render(url) + suffix
+	}
+	return dimStyle.Render(text)
+}
+
+func helpLine() string {
+	parts := []string{
+		dimStyle.Render("↑/↓ move"),
+		selectorStyle.Render("enter/space expose"),
+		dimStyle.Render("c custom"),
+		dimStyle.Render("s stop"),
+		dimStyle.Render("l logs"),
+		dimStyle.Render("q quit"),
+	}
+	return strings.Join(parts, dimStyle.Render("  "))
+}
 func spinnerFrame(frame int) string {
 	frames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 	return frames[frame%len(frames)]
