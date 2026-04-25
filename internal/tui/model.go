@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -39,12 +40,18 @@ type Model struct {
 	stop        StopFunc
 	cursor      int
 	width       int
+	height      int
 	frame       int
 	customMode  bool
 	customValue string
 	err         string
 	status      string
 	exposing    bool
+	pickMode    bool
+	logMode     bool
+	logPort     int
+	logPath     string
+	logLines    []string
 	result      Result
 }
 
@@ -60,6 +67,8 @@ var (
 	requestStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("11"))
 	spinnerStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
 	selectorStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
+	logTitleStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Bold(true)
+	logLineStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("7"))
 )
 
 func NewModel(open []ports.Port, active *state.Session, expose ExposeFunc, stop StopFunc) Model {
@@ -68,6 +77,9 @@ func NewModel(open []ports.Port, active *state.Session, expose ExposeFunc, stop 
 	}
 	model := Model{ports: open, active: active, expose: expose, stop: stop}
 	model.refreshTraffic()
+	if active != nil {
+		model.openLogs()
+	}
 	return model
 }
 
@@ -77,6 +89,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
+		m.height = msg.Height
 		return m, nil
 	case tea.KeyMsg:
 		if m.exposing {
@@ -90,25 +103,48 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateCustom(msg)
 		}
 		switch msg.String() {
-		case "ctrl+c", "q", "esc":
+		case "ctrl+c", "q":
+			return m, tea.Quit
+		case "esc":
+			if m.logMode {
+				m.logMode = false
+				return m, nil
+			}
+			if m.pickMode && m.active != nil {
+				m.pickMode = false
+				return m, nil
+			}
 			return m, tea.Quit
 		case "up", "k":
-			if m.cursor > 0 {
+			if m.showPicker() && m.cursor > 0 {
 				m.cursor--
 			}
 		case "down", "j":
-			if m.cursor < len(m.ports)-1 {
+			if m.showPicker() && m.cursor < len(m.ports)-1 {
 				m.cursor++
 			}
 		case " ", "space", "enter", "return":
-			if len(m.ports) > 0 {
-				return m.startExpose(m.ports[m.cursor].Number)
+			if m.showPicker() && len(m.ports) > 0 {
+				return m.activatePort(m.ports[m.cursor].Number)
+			}
+		case "p", "tab":
+			if m.active != nil {
+				m.pickMode = !m.pickMode
+				if m.pickMode {
+					m.logMode = false
+				}
+				m.err = ""
 			}
 		case "c":
 			m.customMode = true
+			m.pickMode = false
+			m.logMode = false
 			m.customValue = ""
 			m.err = ""
 		case "s":
+			if m.active == nil {
+				return m, nil
+			}
 			if m.stop == nil {
 				m.err = "stop is unavailable"
 				return m, nil
@@ -116,18 +152,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = "stopping funnelr..."
 			return m, stopCmd(m.stop)
 		case "l":
-			port := 0
-			if len(m.ports) > 0 {
-				port = m.ports[m.cursor].Number
+			if m.active == nil {
+				return m, nil
 			}
-			if m.active != nil && port == 0 {
-				port = m.active.TargetPort
+			if m.logMode {
+				m.logMode = false
+			} else {
+				m.openLogs()
 			}
-			if port > 0 {
-				m.result = Result{Action: ActionLogs, Port: port}
-				return m, tea.Quit
-			}
-			m.err = "no log file yet"
 		}
 	case exposeDoneMsg:
 		m.exposing = false
@@ -137,8 +169,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.active = &msg.Result.Session
+		m.pickMode = false
 		m.refreshTraffic()
 		m.err = ""
+		m.openLogs()
 		if msg.Result.Copied {
 			m.status = fmt.Sprintf("public: %s  copied to clipboard", msg.Result.Session.URL)
 		} else {
@@ -153,11 +187,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.active = nil
 		m.traffic = state.Traffic{}
+		m.pickMode = false
+		m.logMode = false
+		m.logLines = nil
 		m.err = ""
 		m.status = "stopped funnelr"
 	case tickMsg:
 		m.frame++
 		m.refreshTraffic()
+		if m.logMode {
+			m.refreshLogs()
+		}
 		return m, tickCmd()
 	}
 	return m, nil
@@ -172,6 +212,17 @@ func (m Model) startExpose(port int) (tea.Model, tea.Cmd) {
 	m.err = ""
 	m.status = fmt.Sprintf("exposing localhost:%d...", port)
 	return m, exposeCmd(m.expose, port)
+}
+
+func (m Model) activatePort(port int) (tea.Model, tea.Cmd) {
+	if m.active != nil && m.active.TargetPort == port {
+		m.err = ""
+		m.status = fmt.Sprintf("active: %s", m.active.URL)
+		m.pickMode = false
+		m.openLogs()
+		return m, nil
+	}
+	return m.startExpose(port)
 }
 
 func (m Model) updateCustom(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -190,7 +241,7 @@ func (m Model) updateCustom(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.customMode = false
 		m.customValue = ""
-		return m.startExpose(port)
+		return m.activatePort(port)
 	case "backspace", "ctrl+h":
 		if len(m.customValue) > 0 {
 			m.customValue = m.customValue[:len(m.customValue)-1]
@@ -242,26 +293,20 @@ func (m Model) View() string {
 	if m.exposing {
 		b.WriteString(dimStyle.Render(spinnerFrame(m.frame) + " working..."))
 		b.WriteString("\n")
+	} else if m.showPicker() {
+		b.WriteString(m.pickerView())
+	} else if m.active != nil {
+		if m.logMode {
+			b.WriteString(m.logView())
+		} else {
+			b.WriteString(dimStyle.Render("logs hidden"))
+			b.WriteString("\n")
+		}
 	} else if len(m.ports) == 0 {
 		b.WriteString(dimStyle.Render("no common local web ports are open"))
 		b.WriteString("\n")
 		b.WriteString(dimStyle.Render("press c to enter a custom port"))
 		b.WriteString("\n")
-	} else {
-		for i, p := range m.ports {
-			cursor := " "
-			if i == m.cursor {
-				cursor = m.cursorGlyph(p.Number)
-			}
-			circle := "○"
-			portText := fmt.Sprintf("localhost:%d", p.Number)
-			if m.active != nil && m.active.TargetPort == p.Number {
-				circle = activeStyle.Render("●")
-				portText = activeStyle.Render(portText)
-			}
-			b.WriteString(fmt.Sprintf("%s %s %s", cursor, circle, portText))
-			b.WriteString("\n")
-		}
 	}
 	b.WriteString("\n")
 	b.WriteString(m.helpLine())
@@ -271,6 +316,121 @@ func (m Model) View() string {
 
 func (m Model) Result() Result {
 	return m.result
+}
+
+func (m Model) showPicker() bool {
+	return m.active == nil || m.pickMode
+}
+
+func (m Model) pickerView() string {
+	var b strings.Builder
+	if len(m.ports) == 0 {
+		b.WriteString(dimStyle.Render("no common local web ports are open"))
+		b.WriteString("\n")
+		b.WriteString(dimStyle.Render("press c to enter a custom port"))
+		b.WriteString("\n")
+		return b.String()
+	}
+	for i, p := range m.ports {
+		cursor := " "
+		if i == m.cursor {
+			cursor = m.cursorGlyph(p.Number)
+		}
+		circle := "○"
+		portText := fmt.Sprintf("localhost:%d", p.Number)
+		if m.active != nil && m.active.TargetPort == p.Number {
+			circle = activeStyle.Render("●")
+			portText = activeStyle.Render(portText)
+		}
+		b.WriteString(fmt.Sprintf("%s %s %s", cursor, circle, portText))
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+func (m *Model) openLogs() {
+	port := 0
+	if m.active != nil {
+		port = m.active.TargetPort
+	} else if len(m.ports) > 0 {
+		port = m.ports[m.cursor].Number
+	}
+	if port <= 0 {
+		m.err = "no active tunnel logs"
+		return
+	}
+	m.logMode = true
+	m.logPort = port
+	m.logPath = state.LogPath(port)
+	m.status = ""
+	m.err = ""
+	m.refreshLogs()
+}
+
+func (m *Model) refreshLogs() {
+	if m.logPath == "" {
+		m.logLines = nil
+		return
+	}
+	data, err := os.ReadFile(m.logPath)
+	if err != nil {
+		m.logLines = []string{dimStyle.Render("no log entries yet")}
+		return
+	}
+	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	if len(lines) == 1 && lines[0] == "" {
+		m.logLines = []string{dimStyle.Render("no log entries yet")}
+		return
+	}
+	maxLines := m.logHeight()
+	if len(lines) > maxLines {
+		lines = lines[len(lines)-maxLines:]
+	}
+	m.logLines = lines
+}
+
+func (m Model) logHeight() int {
+	if m.heightAvailable() < 6 {
+		return 6
+	}
+	return m.heightAvailable()
+}
+
+func (m Model) heightAvailable() int {
+	if m.height <= 0 {
+		return 10
+	}
+	available := m.height - 8
+	if available < 6 {
+		return 6
+	}
+	return available
+}
+
+func (m Model) logView() string {
+	var b strings.Builder
+	b.WriteString(logTitleStyle.Render(fmt.Sprintf("logs localhost:%d", m.logPort)))
+	b.WriteString(dimStyle.Render("  l/esc close  q quit"))
+	b.WriteString("\n")
+	for _, line := range m.logLines {
+		b.WriteString(logLineStyle.Render(m.truncateLine(line)))
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+func (m Model) truncateLine(line string) string {
+	if m.width <= 0 || len(line) <= m.width {
+		return line
+	}
+	limit := m.width - 1
+	if limit < 20 {
+		limit = 20
+	}
+	if len(line) <= limit {
+		return line
+	}
+	return line[:limit-1] + "…"
 }
 
 func (m *Model) refreshTraffic() {
@@ -299,6 +459,10 @@ func (m Model) activeLine() string {
 }
 
 func statusLine(text string) string {
+	if strings.HasPrefix(text, "active: ") {
+		url := strings.TrimPrefix(text, "active: ")
+		return dimStyle.Render("active: ") + urlStyle.Render(url)
+	}
 	if strings.HasPrefix(text, "public: ") {
 		url := strings.TrimPrefix(text, "public: ")
 		suffix := ""
@@ -319,16 +483,38 @@ func (m Model) cursorGlyph(port int) string {
 }
 
 func (m Model) helpLine() string {
-	action := "enter/space expose"
-	if m.active != nil {
-		action = "enter/space swap"
+	if m.showPicker() {
+		action := "enter/space expose"
+		selectedActive := m.active != nil && len(m.ports) > 0 && m.cursor < len(m.ports) && m.active.TargetPort == m.ports[m.cursor].Number
+		if selectedActive {
+			action = "selected active"
+		} else if m.active != nil {
+			action = "enter/space swap"
+		}
+		parts := []string{
+			dimStyle.Render("↑/↓ move"),
+			selectorStyle.Render(action),
+			dimStyle.Render("c custom"),
+			dimStyle.Render("q quit"),
+		}
+		if m.active != nil {
+			parts = append(parts[:3], append([]string{
+				dimStyle.Render("esc close picker"),
+				dimStyle.Render("s stop"),
+				dimStyle.Render("l logs"),
+			}, parts[3:]...)...)
+		}
+		return strings.Join(parts, dimStyle.Render("  "))
+	}
+	logAction := "l show logs"
+	if m.logMode {
+		logAction = "l/esc hide logs"
 	}
 	parts := []string{
-		dimStyle.Render("↑/↓ move"),
-		selectorStyle.Render(action),
+		selectorStyle.Render("p pick/swap"),
 		dimStyle.Render("c custom"),
+		dimStyle.Render(logAction),
 		dimStyle.Render("s stop"),
-		dimStyle.Render("l logs"),
 		dimStyle.Render("q quit"),
 	}
 	return strings.Join(parts, dimStyle.Render("  "))
