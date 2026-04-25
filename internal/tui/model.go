@@ -251,7 +251,7 @@ func (m Model) View() string {
 		for i, p := range m.ports {
 			cursor := " "
 			if i == m.cursor {
-				cursor = selectorStyle.Render("›")
+				cursor = m.cursorGlyph(p.Number)
 			}
 			circle := "○"
 			portText := fmt.Sprintf("localhost:%d", p.Number)
@@ -264,7 +264,7 @@ func (m Model) View() string {
 		}
 	}
 	b.WriteString("\n")
-	b.WriteString(helpLine())
+	b.WriteString(m.helpLine())
 	b.WriteString("\n")
 	return b.String()
 }
@@ -311,10 +311,21 @@ func statusLine(text string) string {
 	return dimStyle.Render(text)
 }
 
-func helpLine() string {
+func (m Model) cursorGlyph(port int) string {
+	if m.active != nil && m.active.TargetPort != port {
+		return requestStyle.Render("⇄")
+	}
+	return selectorStyle.Render("›")
+}
+
+func (m Model) helpLine() string {
+	action := "enter/space expose"
+	if m.active != nil {
+		action = "enter/space swap"
+	}
 	parts := []string{
 		dimStyle.Render("↑/↓ move"),
-		selectorStyle.Render("enter/space expose"),
+		selectorStyle.Render(action),
 		dimStyle.Render("c custom"),
 		dimStyle.Render("s stop"),
 		dimStyle.Render("l logs"),
