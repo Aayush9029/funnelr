@@ -64,14 +64,35 @@ func runInteractive() error {
 	if err := service.Check(ctx); err != nil {
 		return err
 	}
-	open := ports.OpenOnly(ports.Defaults, 120*time.Millisecond)
 	active, err := funnel.LoadSession()
 	if err != nil {
 		return err
 	}
+	if active != nil && !processAlive(active.PID) {
+		_ = service.Stop(ctx)
+		active = nil
+	}
+	if active == nil {
+		_ = service.Stop(ctx)
+	}
+	open := ports.OpenOnly(ports.Defaults, 120*time.Millisecond)
 	model := tui.NewModel(open, active, service.Expose, service.Stop)
-	_, err = tea.NewProgram(model).Run()
-	return err
+	_, runErr := tea.NewProgram(model).Run()
+	if s, _ := funnel.LoadSession(); s != nil {
+		_ = service.Stop(context.Background())
+	}
+	return runErr
+}
+
+func processAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	p, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	return p.Signal(syscall.Signal(0)) == nil
 }
 
 func expose(port int) error {
